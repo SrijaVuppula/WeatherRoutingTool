@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as pyplot
 import pytest
 from astropy import units as u
+from datetime import datetime, timedelta
 
 import tests.basic_test_func as basic_test_func
 import WeatherRoutingTool.utils.graphics as graphics
@@ -21,6 +22,8 @@ from WeatherRoutingTool.config import Config
 from WeatherRoutingTool.algorithms.genetic.repair import ConstraintViolationRepair
 from WeatherRoutingTool.ship.ship_config import ShipConfig
 from WeatherRoutingTool.utils.maps import Map
+from WeatherRoutingTool.algorithms.genetic.problem import RoutingProblem
+from WeatherRoutingTool.routeparams import RouteParams
 
 
 def test_isofuelpatcher_singleton():
@@ -414,3 +417,54 @@ def test_speed_crossover(plt):
 
     pyplot.tight_layout()
     plt.saveas = "test_speed_crossover.png"
+
+def test_routingproblem_get_power():
+    departure_time = datetime(2025, 4, 1, 12, 0, 0)
+    arrival_time = departure_time + timedelta(seconds=30)
+
+    class DummyShipParams:
+        def get_fuel_rate(self):
+            return np.array([2.0, 3.0]) * (u.kg / u.second)
+
+    class DummyBoat:
+        def get_ship_parameters(self, courses, lats, lons, time, speed):
+            return DummyShipParams()
+
+    problem = RoutingProblem(
+        departure_time=departure_time,
+        arrival_time=arrival_time,
+        boat=DummyBoat(),
+        boat_speed=10.0,
+        constraint_list=[],
+        objectives={"fuel_consumption": 1, "arrival_time": 1},
+    )
+
+    route = np.array([
+        [35.199, 15.490, 5.0],
+        [34.804, 16.759, 6.0],
+        [34.447, 18.381, 7.0],
+    ])
+
+    original = RouteParams.get_per_waypoint_coords
+
+    def fake_get_per_waypoint_coords(lons, lats, departure_time, bs):
+        return {
+            "courses": np.array([10.0, 20.0]),
+            "start_lats": np.array([35.199, 34.804]),
+            "start_lons": np.array([15.490, 16.759]),
+            "start_times": [
+                departure_time,
+                departure_time + timedelta(seconds=10),
+            ],
+            "travel_times": np.array([10.0, 20.0]) * u.second,
+        }
+
+    RouteParams.get_per_waypoint_coords = staticmethod(fake_get_per_waypoint_coords)
+    try:
+        result = problem.get_power(route)
+    finally:
+        RouteParams.get_per_waypoint_coords = original
+
+    assert np.isclose(result["fuel_sum"].value, 80.0)
+    assert result["time_obj"] == 1
+    assert "shipparams" in result
